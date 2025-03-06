@@ -67,6 +67,8 @@ func (l *CompliancePlugin) PrepareForEval(req *proto.PrepareForEvalRequest) (*pr
 		var instances []map[string]interface{}
 		for _, reservation := range result.Reservations {
 			for _, instance := range reservation.Instances {
+
+				l.logger.Debug("instance", instance)
 				// Convert EC2 tags
 				var tags []Tag
 				for _, tag := range instance.Tags {
@@ -75,34 +77,42 @@ func (l *CompliancePlugin) PrepareForEval(req *proto.PrepareForEvalRequest) (*pr
 
 				// Append instance to list
 				instances = append(instances, map[string]interface{}{
-					"InstanceID":   *instance.InstanceId,
-					"InstanceType": string(instance.InstanceType),
-					"ImageID":      *instance.ImageId,
-					"PrivateIP":    aws.ToString(instance.PrivateIpAddress),
-					"PublicIP":     aws.ToString(instance.PublicIpAddress),
-					"State":        string(instance.State.Name),
-					"Tags":         tags,
+					"InstanceID":          aws.ToString(instance.InstanceId),
+					"InstanceType":        string(instance.InstanceType),
+					"ImageID":             aws.ToString(instance.ImageId),
+					"PrivateIP":           aws.ToString(instance.PrivateIpAddress),
+					"PublicIP":            aws.ToString(instance.PublicIpAddress),
+					"State":               string(instance.State.Name),
+					"Tags":                tags,
+					"LaunchTime":          instance.LaunchTime,
+					"SubnetID":            aws.ToString(instance.SubnetId),
+					"VpcID":               aws.ToString(instance.VpcId),
+					"KeyName":             aws.ToString(instance.KeyName),
+					"Architecture":        string(instance.Architecture),
+					"Platform":            string(instance.Platform),
+					"PlatformDetails":     aws.ToString(instance.PlatformDetails),
+					"RootDeviceType":      string(instance.RootDeviceType),
+					"RootDeviceName":      aws.ToString(instance.RootDeviceName),
+					"VirtualizationType":  string(instance.VirtualizationType),
+					"Monitoring":          instance.Monitoring.State,
+					"SecurityGroups":      instance.SecurityGroups,
+					"BlockDeviceMappings": instance.BlockDeviceMappings,
+					"NetworkInterfaces":   instance.NetworkInterfaces,
+					"Hypervisor":          string(instance.Hypervisor),
+					"EbsOptimized":        instance.EbsOptimized,
+					"CpuOptions":          instance.CpuOptions,
+					"Placement":           instance.Placement,
+					"UsageOperation":      aws.ToString(instance.UsageOperation),
+					"MetadataOptions":     instance.MetadataOptions,
+					"MaintenanceOptions":  instance.MaintenanceOptions,
+					"HibernationOptions":  instance.HibernationOptions,
+					"InstanceLifecycle":   string(instance.InstanceLifecycle),
+					"EnclaveOptions":      instance.EnclaveOptions,
+					"TpmSupport":          aws.ToString(instance.TpmSupport),
+					"SriovNetSupport":     aws.ToString(instance.SriovNetSupport),
 				})
 			}
 		}
-
-		// instanceJSON, err := json.Marshal(instances)
-		// if err != nil {
-		// 	log.Fatalf("unable to marshal instance to JSON, %v", err)
-		// }
-
-		// var instanceMap map[string]interface{}
-		// err = json.Unmarshal(instanceJSON, &instanceMap)
-		// if err != nil {
-		// 	log.Fatalf("unable to unmarshal instance JSON to map, %v", err)
-		// }
-
-		// l.logger.Debug("converting AWS configuration to json map for evaluation")
-		// awsConfigMap, err := pkg.ConvertConfToMap(scanner)
-		// if err != nil {
-		// 	l.logger.Error("Failed to convert AWS config to map", "error", err)
-		// 	return &proto.PrepareForEvalResponse{}, err
-		// }
 
 		l.data["instances"] = instances
 	} else {
@@ -178,12 +188,12 @@ func (l *CompliancePlugin) Eval(request *proto.EvalRequest, apiHelper runner.Api
 			assessmentResult.AddObservation(&proto.Observation{
 				Uuid:        observationUuid,
 				Title:       &title,
-				Description: fmt.Sprintf("Observed %d violation(s) for policy %s within the Plugin on machineId: %s.", len(result.Violations), result.Policy.Package.PurePackage(), "ARN:12345"),
+				Description: fmt.Sprintf("Observed %d violation(s) for policy %s", len(result.Violations), result.Policy.Package.PurePackage()),
 				Collected:   timestamppb.New(time.Now()),
 				Expires:     timestamppb.New(time.Now().AddDate(0, 1, 0)), // Add one month for the expiration
 				RelevantEvidence: []*proto.RelevantEvidence{
 					{
-						Description: fmt.Sprintf("Policy %v was evaluated, and %d violations were found on machineId: %s", result.Policy.Package.PurePackage(), len(result.Violations), "ARN:12345"),
+						Description: fmt.Sprintf("Policy %v was evaluated, and %d violations were found", result.Policy.Package.PurePackage(), len(result.Violations)),
 					},
 				},
 				Labels: map[string]string{
