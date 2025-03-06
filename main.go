@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -23,20 +24,8 @@ import (
 
 type CompliancePlugin struct {
 	logger hclog.Logger
-	data   map[string]interface{}
 	config map[string]string
 }
-
-// // TODO: move these to a common lib
-// type EC2Instance struct {
-// 	InstanceID   string `json:"InstanceId"`
-// 	InstanceType string `json:"InstanceType"`
-// 	ImageID      string `json:"ImageId"`
-// 	PrivateIP    string `json:"PrivateIpAddress"`
-// 	PublicIP     string `json:"PublicIpAddress,omitempty"`
-// 	State        string `json:"State"`
-// 	Tags         []Tag  `json:"Tags"`
-// }
 
 type Tag struct {
 	Key   string `json:"Key"`
@@ -48,12 +37,16 @@ func (l *CompliancePlugin) Configure(req *proto.ConfigureRequest) (*proto.Config
 	return &proto.ConfigureResponse{}, nil
 }
 
-func (l *CompliancePlugin) PrepareForEval(req *proto.PrepareForEvalRequest) (*proto.PrepareForEvalResponse, error) {
+func (l *CompliancePlugin) Eval(request *proto.EvalRequest, apiHelper runner.ApiHelper) (resp *proto.EvalResponse, errAcc error) {
+	ctx := context.TODO()
+	startTime := time.Now()
+	evalStatus := proto.ExecutionStatus_SUCCESS
 
 	cfg, err := config.LoadDefaultConfig(context.TODO(), config.WithRegion(os.Getenv("AWS_REGION")))
 	if err != nil {
 		log.Fatalf("unable to load SDK config, %v", err)
 	}
+
 	if l.config["ec2"] == "true" || l.config["ec2"] == "1" {
 		svc := ec2.NewFromConfig(cfg)
 
@@ -114,174 +107,180 @@ func (l *CompliancePlugin) PrepareForEval(req *proto.PrepareForEvalRequest) (*pr
 			}
 		}
 
-		l.data["instances"] = instances
+		// Use the data from the PrepareForEval
+		l.logger.Debug("evaluating data", instances)
+
+		for _, instance := range instances {
+			for _, policyPath := range request.GetPolicyPaths() {
+				results, err := policyManager.New(ctx, l.logger, policyPath).Execute(ctx, "compliance_plugin", instance)
+
+				if err != nil {
+					l.logger.Error("Failed to evaluate against policy bundle", "error", err)
+					evalStatus = proto.ExecutionStatus_FAILURE
+					errAcc = errors.Join(errAcc, err)
+					continue
+				}
+
+				assessmentResult := runner.NewCallableAssessmentResult()
+				assessmentResult.Title = "Plugin template"
+
+				for _, result := range results {
+
+					// There are no violations reported from the policies.
+					// We'll send the observation back to the agent
+					if len(result.Violations) == 0 {
+						title := "The plugin succeeded. No compliance issues to report."
+						assessmentResult.AddObservation(&proto.Observation{
+							Uuid:        uuid.New().String(),
+							Title:       &title,
+							Description: "The plugin policies did not return any violations. The configuration is in compliance with policies.",
+							Collected:   timestamppb.New(time.Now()),
+							Expires:     timestamppb.New(time.Now().AddDate(0, 1, 0)), // Add one month for the expiration
+							RelevantEvidence: []*proto.RelevantEvidence{
+								{
+									Description: fmt.Sprintf("Policy %v was evaluated, and no violations were found on machineId: %s", result.Policy.Package.PurePackage(), "ARN:12345"),
+								},
+							},
+							Labels: map[string]string{
+								"package": string(result.Policy.Package),
+								"type":    "aws-cloud",
+							},
+						})
+
+						status := runner.FindingTargetStatusSatisfied
+						assessmentResult.AddFinding(&proto.Finding{
+							Title:       fmt.Sprintf("No violations found on %s", result.Policy.Package.PurePackage()),
+							Description: fmt.Sprintf("No violations found on the %s policy within the Template Compliance Plugin.", result.Policy.Package.PurePackage()),
+							Target: &proto.FindingTarget{
+								Status: &proto.ObjectiveStatus{
+									State: status,
+								},
+							},
+							Labels: map[string]string{
+								"package": string(result.Policy.Package),
+								"type":    "aws-cloud",
+							},
+						})
+					}
+
+					// There are violations in the policy checks.
+					// We'll send these observations back to the agent
+					if len(result.Violations) > 0 {
+						title := fmt.Sprintf("The plugin found violations for policy %s on machineId: %s", result.Policy.Package.PurePackage(), "ARN:12345")
+						observationUuid := uuid.New().String()
+						assessmentResult.AddObservation(&proto.Observation{
+							Uuid:        observationUuid,
+							Title:       &title,
+							Description: fmt.Sprintf("Observed %d violation(s) for policy %s", len(result.Violations), result.Policy.Package.PurePackage()),
+							Collected:   timestamppb.New(time.Now()),
+							Expires:     timestamppb.New(time.Now().AddDate(0, 1, 0)), // Add one month for the expiration
+							RelevantEvidence: []*proto.RelevantEvidence{
+								{
+									Description: fmt.Sprintf("Policy %v was evaluated, and %d violations were found", result.Policy.Package.PurePackage(), len(result.Violations)),
+								},
+							},
+							Labels: map[string]string{
+								"package": string(result.Policy.Package),
+								"type":    "aws-cloud",
+							},
+						})
+
+						for _, violation := range result.Violations {
+							status := runner.FindingTargetStatusNotSatisfied
+							assessmentResult.AddFinding(&proto.Finding{
+								Title:       violation.Title,
+								Description: violation.Description,
+								Remarks:     &violation.Remarks,
+								RelatedObservations: []*proto.RelatedObservation{
+									{
+										ObservationUuid: observationUuid,
+									},
+								},
+								Target: &proto.FindingTarget{
+									Status: &proto.ObjectiveStatus{
+										State: status,
+									},
+								},
+								Labels: map[string]string{
+									"package": string(result.Policy.Package),
+									"type":    "aws-cloud",
+								},
+							})
+						}
+					}
+
+					for _, risk := range result.Risks {
+						links := []*proto.Link{}
+						for _, link := range risk.Links {
+							links = append(links, &proto.Link{
+								Href: link.URL,
+								Text: &link.Text,
+							})
+						}
+
+						assessmentResult.AddRiskEntry(&proto.Risk{
+							Title:       risk.Title,
+							Description: risk.Description,
+							Statement:   risk.Statement,
+							Props:       []*proto.Property{},
+							Links:       links,
+						})
+					}
+				}
+
+				endTime := time.Now()
+
+				// Send the results back to the agent using the API Helper process the agent created for us
+				assessmentResult.Start = timestamppb.New(startTime)
+				assessmentResult.End = timestamppb.New(endTime)
+
+				assessmentResult.AddLogEntry(&proto.AssessmentLog_Entry{
+					Title:       protolang.String("Template check"),
+					Description: protolang.String("Template plugin checks completed successfully"),
+					Start:       timestamppb.New(startTime),
+					End:         timestamppb.New(endTime),
+				})
+
+				streamId, err := sdk.SeededUUID(map[string]string{
+					"type":    "aws-cloud",
+					"_policy": policyPath,
+				})
+				if err != nil {
+					// return &proto.EvalResponse{
+					// 	Status: proto.ExecutionStatus_FAILURE,
+					// }, err
+					l.logger.Error("Failed to seedUUID", "error", err)
+					evalStatus = proto.ExecutionStatus_FAILURE
+					errAcc = errors.Join(errAcc, err)
+					continue
+				}
+
+				err = apiHelper.CreateResult(
+					streamId.String(),
+					map[string]string{
+						"type":    "aws-cloud",
+						"_policy": policyPath,
+					},
+					policyPath,
+					assessmentResult.Result())
+				if err != nil {
+					l.logger.Error("Failed to add assessment result", "error", err)
+					evalStatus = proto.ExecutionStatus_FAILURE
+					errAcc = errors.Join(errAcc, err)
+				}
+			}
+		}
+
 	} else {
 		fmt.Println("EC2 is not enabled")
 	}
-	return &proto.PrepareForEvalResponse{}, nil
-}
 
-func (l *CompliancePlugin) Eval(request *proto.EvalRequest, apiHelper runner.ApiHelper) (*proto.EvalResponse, error) {
-	ctx := context.TODO()
-	startTime := time.Now()
-
-	// Use the data from the PrepareForEval
-	l.logger.Debug("evaluating data", l.data)
-
-	// The Policy Manager aggregates much of the policy execution and output structuring.
-	results, err := policyManager.New(ctx, l.logger, request.BundlePath).Execute(ctx, "compliance_plugin", l.data)
-
-	if err != nil {
-		l.logger.Error("Failed to evaluate against policy bundle", "error", err)
-		return &proto.EvalResponse{
-			Status: proto.ExecutionStatus_FAILURE,
-		}, err
+	resp = &proto.EvalResponse{
+		Status: evalStatus,
 	}
 
-	assessmentResult := runner.NewCallableAssessmentResult()
-	assessmentResult.Title = "Plugin template"
+	return resp, errAcc
 
-	for _, result := range results {
-
-		// There are no violations reported from the policies.
-		// We'll send the observation back to the agent
-		if len(result.Violations) == 0 {
-			title := "The plugin succeeded. No compliance issues to report."
-			assessmentResult.AddObservation(&proto.Observation{
-				Uuid:        uuid.New().String(),
-				Title:       &title,
-				Description: "The plugin policies did not return any violations. The configuration is in compliance with policies.",
-				Collected:   timestamppb.New(time.Now()),
-				Expires:     timestamppb.New(time.Now().AddDate(0, 1, 0)), // Add one month for the expiration
-				RelevantEvidence: []*proto.RelevantEvidence{
-					{
-						Description: fmt.Sprintf("Policy %v was evaluated, and no violations were found on machineId: %s", result.Policy.Package.PurePackage(), "ARN:12345"),
-					},
-				},
-				Labels: map[string]string{
-					"package": string(result.Policy.Package),
-					"type":    "template",
-				},
-			})
-
-			status := runner.FindingTargetStatusSatisfied
-			assessmentResult.AddFinding(&proto.Finding{
-				Title:       fmt.Sprintf("No violations found on %s", result.Policy.Package.PurePackage()),
-				Description: fmt.Sprintf("No violations found on the %s policy within the Template Compliance Plugin.", result.Policy.Package.PurePackage()),
-				Target: &proto.FindingTarget{
-					Status: &proto.ObjectiveStatus{
-						State: status,
-					},
-				},
-				Labels: map[string]string{
-					"package": string(result.Policy.Package),
-					"type":    "template",
-				},
-			})
-		}
-
-		// There are violations in the policy checks.
-		// We'll send these observations back to the agent
-		if len(result.Violations) > 0 {
-			title := fmt.Sprintf("The plugin found violations for policy %s on machineId: %s", result.Policy.Package.PurePackage(), "ARN:12345")
-			observationUuid := uuid.New().String()
-			assessmentResult.AddObservation(&proto.Observation{
-				Uuid:        observationUuid,
-				Title:       &title,
-				Description: fmt.Sprintf("Observed %d violation(s) for policy %s", len(result.Violations), result.Policy.Package.PurePackage()),
-				Collected:   timestamppb.New(time.Now()),
-				Expires:     timestamppb.New(time.Now().AddDate(0, 1, 0)), // Add one month for the expiration
-				RelevantEvidence: []*proto.RelevantEvidence{
-					{
-						Description: fmt.Sprintf("Policy %v was evaluated, and %d violations were found", result.Policy.Package.PurePackage(), len(result.Violations)),
-					},
-				},
-				Labels: map[string]string{
-					"package": string(result.Policy.Package),
-					"type":    "template",
-				},
-			})
-
-			for _, violation := range result.Violations {
-				status := runner.FindingTargetStatusNotSatisfied
-				assessmentResult.AddFinding(&proto.Finding{
-					Title:       violation.Title,
-					Description: violation.Description,
-					Remarks:     &violation.Remarks,
-					RelatedObservations: []*proto.RelatedObservation{
-						{
-							ObservationUuid: observationUuid,
-						},
-					},
-					Target: &proto.FindingTarget{
-						Status: &proto.ObjectiveStatus{
-							State: status,
-						},
-					},
-					Labels: map[string]string{
-						"package": string(result.Policy.Package),
-						"type":    "template",
-					},
-				})
-			}
-		}
-
-		for _, risk := range result.Risks {
-			links := []*proto.Link{}
-			for _, link := range risk.Links {
-				links = append(links, &proto.Link{
-					Href: link.URL,
-					Text: &link.Text,
-				})
-			}
-
-			assessmentResult.AddRiskEntry(&proto.Risk{
-				Title:       risk.Title,
-				Description: risk.Description,
-				Statement:   risk.Statement,
-				Props:       []*proto.Property{},
-				Links:       links,
-			})
-		}
-	}
-
-	endTime := time.Now()
-
-	// Send the results back to the agent using the API Helper process the agent created for us
-	assessmentResult.Start = timestamppb.New(startTime)
-	assessmentResult.End = timestamppb.New(endTime)
-
-	assessmentResult.AddLogEntry(&proto.AssessmentLog_Entry{
-		Title:       protolang.String("Template check"),
-		Description: protolang.String("Template plugin checks completed successfully"),
-		Start:       timestamppb.New(startTime),
-		End:         timestamppb.New(endTime),
-	})
-
-	streamId, err := sdk.SeededUUID(map[string]string{
-		"type":    "template",
-		"_policy": request.GetBundlePath(),
-	})
-	if err != nil {
-		return &proto.EvalResponse{
-			Status: proto.ExecutionStatus_FAILURE,
-		}, err
-	}
-
-	err = apiHelper.CreateResult(streamId.String(), map[string]string{
-		"type":    "template",
-		"_policy": request.GetBundlePath(),
-	}, assessmentResult.Result())
-	if err != nil {
-		l.logger.Error("Failed to add assessment result", "error", err)
-		return &proto.EvalResponse{
-			Status: proto.ExecutionStatus_FAILURE,
-		}, err
-	}
-
-	return &proto.EvalResponse{
-		Status: proto.ExecutionStatus_SUCCESS,
-	}, nil
 }
 
 func main() {
@@ -292,7 +291,6 @@ func main() {
 
 	compliancePluginObj := &CompliancePlugin{
 		logger: logger,
-		data:   make(map[string]interface{}),
 	}
 	// pluginMap is the map of plugins we can dispense.
 	logger.Debug("initiating plugin")

@@ -2,11 +2,12 @@ module github.com/compliance-framework/plugin-aws
 
 go 1.24.0
 
+replace github.com/compliance-framework/agent => ../agent
+
 require (
 	github.com/aws/aws-sdk-go-v2 v1.36.3
 	github.com/aws/aws-sdk-go-v2/config v1.29.9
 	github.com/aws/aws-sdk-go-v2/service/ec2 v1.207.1
-	github.com/chris-cmsoft/conftojson v0.0.0-20241105132434-7c8873e5cbb6
 	github.com/compliance-framework/agent v0.0.14
 	github.com/compliance-framework/configuration-service v0.0.5
 	github.com/google/uuid v1.6.0
