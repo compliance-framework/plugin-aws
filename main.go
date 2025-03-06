@@ -2,12 +2,12 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"log"
 	"os"
 	"time"
 
+	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/ec2"
 	policyManager "github.com/compliance-framework/agent/policy-manager"
@@ -25,6 +25,22 @@ type CompliancePlugin struct {
 	logger hclog.Logger
 	data   map[string]interface{}
 	config map[string]string
+}
+
+// // TODO: move these to a common lib
+// type EC2Instance struct {
+// 	InstanceID   string `json:"InstanceId"`
+// 	InstanceType string `json:"InstanceType"`
+// 	ImageID      string `json:"ImageId"`
+// 	PrivateIP    string `json:"PrivateIpAddress"`
+// 	PublicIP     string `json:"PublicIpAddress,omitempty"`
+// 	State        string `json:"State"`
+// 	Tags         []Tag  `json:"Tags"`
+// }
+
+type Tag struct {
+	Key   string `json:"Key"`
+	Value string `json:"Value"`
 }
 
 func (l *CompliancePlugin) Configure(req *proto.ConfigureRequest) (*proto.ConfigureResponse, error) {
@@ -47,25 +63,48 @@ func (l *CompliancePlugin) PrepareForEval(req *proto.PrepareForEvalRequest) (*pr
 			log.Fatalf("unable to list instances, %v", err)
 		}
 
+		// Parse EC2 instance data into a readable format
+		var instances []map[string]interface{}
 		for _, reservation := range result.Reservations {
 			for _, instance := range reservation.Instances {
-
-				instanceJSON, err := json.Marshal(instance)
-				if err != nil {
-					log.Fatalf("unable to marshal instance to JSON, %v", err)
+				// Convert EC2 tags
+				var tags []Tag
+				for _, tag := range instance.Tags {
+					tags = append(tags, Tag{Key: *tag.Key, Value: *tag.Value})
 				}
 
-				var instanceMap map[string]interface{}
-				err = json.Unmarshal(instanceJSON, &instanceMap)
-				if err != nil {
-					log.Fatalf("unable to unmarshal instance JSON to map, %v", err)
-				}
-
-				l.data = instanceMap
-				l.logger.Debug("EC2 instance configuration prepared for evaluation")
-				l.logger.Debug("instance", instanceMap)
+				// Append instance to list
+				instances = append(instances, map[string]interface{}{
+					"InstanceID":   *instance.InstanceId,
+					"InstanceType": string(instance.InstanceType),
+					"ImageID":      *instance.ImageId,
+					"PrivateIP":    aws.ToString(instance.PrivateIpAddress),
+					"PublicIP":     aws.ToString(instance.PublicIpAddress),
+					"State":        string(instance.State.Name),
+					"Tags":         tags,
+				})
 			}
 		}
+
+		// instanceJSON, err := json.Marshal(instances)
+		// if err != nil {
+		// 	log.Fatalf("unable to marshal instance to JSON, %v", err)
+		// }
+
+		// var instanceMap map[string]interface{}
+		// err = json.Unmarshal(instanceJSON, &instanceMap)
+		// if err != nil {
+		// 	log.Fatalf("unable to unmarshal instance JSON to map, %v", err)
+		// }
+
+		// l.logger.Debug("converting AWS configuration to json map for evaluation")
+		// awsConfigMap, err := pkg.ConvertConfToMap(scanner)
+		// if err != nil {
+		// 	l.logger.Error("Failed to convert AWS config to map", "error", err)
+		// 	return &proto.PrepareForEvalResponse{}, err
+		// }
+
+		l.data["instances"] = instances
 	} else {
 		fmt.Println("EC2 is not enabled")
 	}
@@ -243,6 +282,7 @@ func main() {
 
 	compliancePluginObj := &CompliancePlugin{
 		logger: logger,
+		data:   make(map[string]interface{}),
 	}
 	// pluginMap is the map of plugins we can dispense.
 	logger.Debug("initiating plugin")

@@ -6,7 +6,6 @@ require (
 	github.com/aws/aws-sdk-go-v2 v1.36.3
 	github.com/aws/aws-sdk-go-v2/config v1.29.9
 	github.com/aws/aws-sdk-go-v2/service/ec2 v1.207.1
-	github.com/chris-cmsoft/concom v0.0.1
 	github.com/chris-cmsoft/conftojson v0.0.0-20241105132434-7c8873e5cbb6
 	github.com/compliance-framework/agent v0.0.14
 	github.com/compliance-framework/configuration-service v0.0.5
@@ -67,7 +66,6 @@ require (
 	golang.org/x/text v0.21.0 // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20241209162323-e6fa225c2576 // indirect
 	google.golang.org/grpc v1.69.2 // indirect
-	gopkg.in/yaml.v2 v2.4.0 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 	sigs.k8s.io/yaml v1.4.0 // indirect
 )
