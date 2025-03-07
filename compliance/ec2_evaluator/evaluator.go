@@ -114,7 +114,7 @@ func (e *Evaluator) Run(ctx context.Context, request *proto.EvalRequest, apiHelp
 
 			// Build and send results (this is also from your existing logic)
 			assessmentResult := runner.NewCallableAssessmentResult()
-			assessmentResult.Title = "EC2 checks - AWS plugin"
+			assessmentResult.Title = "EC2 instance checks - AWS plugin"
 
 			for _, result := range results {
 
@@ -134,8 +134,9 @@ func (e *Evaluator) Run(ctx context.Context, request *proto.EvalRequest, apiHelp
 							},
 						},
 						Labels: map[string]string{
-							"package": string(result.Policy.Package),
-							"type":    "aws-cloud",
+							"package":    string(result.Policy.Package),
+							"type":       "ec2-checks--aws-cloud",
+							"instanceID": fmt.Sprintf("%v", instance["InstanceID"]),
 						},
 					})
 
@@ -149,8 +150,9 @@ func (e *Evaluator) Run(ctx context.Context, request *proto.EvalRequest, apiHelp
 							},
 						},
 						Labels: map[string]string{
-							"package": string(result.Policy.Package),
-							"type":    "aws-cloud",
+							"package":    string(result.Policy.Package),
+							"type":       "ec2-checks--aws-cloud",
+							"instanceID": fmt.Sprintf("%v", instance["InstanceID"]),
 						},
 					})
 				}
@@ -172,8 +174,9 @@ func (e *Evaluator) Run(ctx context.Context, request *proto.EvalRequest, apiHelp
 							},
 						},
 						Labels: map[string]string{
-							"package": string(result.Policy.Package),
-							"type":    "aws-cloud",
+							"package":    string(result.Policy.Package),
+							"type":       "ec2-checks--aws-cloud",
+							"instanceID": fmt.Sprintf("%v", instance["InstanceID"]),
 						},
 					})
 
@@ -194,8 +197,9 @@ func (e *Evaluator) Run(ctx context.Context, request *proto.EvalRequest, apiHelp
 								},
 							},
 							Labels: map[string]string{
-								"package": string(result.Policy.Package),
-								"type":    "aws-cloud",
+								"package":    string(result.Policy.Package),
+								"type":       "ec2-checks--aws-cloud",
+								"instanceID": fmt.Sprintf("%v", instance["InstanceID"]),
 							},
 						})
 					}
